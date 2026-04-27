@@ -1,0 +1,103 @@
+name: keycloak-token
+description: >-
+  Fetch a short-TTL OIDC access token from Keycloak via client_credentials
+  grant. Use as a step in workflows that need to authenticate to internal
+  services (image registry, Komodo Core, etc.) using a Keycloak service
+  account, instead of long-lived basic-auth credentials.
+
+  The token is auto-masked in workflow logs. Pass it to subsequent steps
+  via this action's `access-token` output.
+
+inputs:
+  keycloak-url:
+    description: >-
+      Keycloak base URL, e.g. `https://keycloak.example.com`. The action
+      derives the token endpoint as `${keycloak-url}/realms/${realm}/protocol/openid-connect/token`.
+    required: true
+  realm:
+    description: >-
+      Keycloak realm name. The service account specified by `client-id`
+      must live in this realm.
+    required: true
+  client-id:
+    description: >-
+      OIDC client ID for the service account. The client must be
+      configured in Keycloak with `Client authentication: On` and
+      `Authentication flow > Service accounts roles: enabled`.
+    required: true
+  client-secret:
+    description: >-
+      Client secret for the OIDC client. Pass via repo/org secret;
+      the action does not echo it.
+    required: true
+  scope:
+    description: >-
+      Optional OAuth scope(s) requested. Space-separated. Default empty
+      (Keycloak returns the client's default scopes).
+    required: false
+    default: ''
+
+outputs:
+  access-token:
+    description: >-
+      The access_token value from Keycloak's response. Masked in logs.
+      TTL is whatever the realm's "Access Token Lifespan" is set to
+      (Keycloak default 5 min). Renew by re-running this action.
+    value: ${{ steps.fetch.outputs.access-token }}
+  expires-in:
+    description: >-
+      Token TTL in seconds, as returned by Keycloak (`expires_in` field).
+      Useful for callers that want to trim long-running operations to
+      stay within the token's validity window.
+    value: ${{ steps.fetch.outputs.expires-in }}
+
+runs:
+  using: composite
+  steps:
+    - id: fetch
+      shell: bash
+      env:
+        KEYCLOAK_URL: ${{ inputs.keycloak-url }}
+        REALM: ${{ inputs.realm }}
+        CLIENT_ID: ${{ inputs.client-id }}
+        CLIENT_SECRET: ${{ inputs.client-secret }}
+        SCOPE: ${{ inputs.scope }}
+      run: |
+        set -euo pipefail
+
+        TOKEN_URL="${KEYCLOAK_URL%/}/realms/${REALM}/protocol/openid-connect/token"
+
+        # Build the form body. Keycloak rejects empty `scope=` so only
+        # include it when non-empty.
+        BODY="grant_type=client_credentials&client_id=${CLIENT_ID}&client_secret=${CLIENT_SECRET}"
+        if [ -n "${SCOPE}" ]; then
+          # URL-encode spaces in scope (Keycloak accepts space or +).
+          ENCODED_SCOPE="${SCOPE// /+}"
+          BODY="${BODY}&scope=${ENCODED_SCOPE}"
+        fi
+
+        # --fail-with-body so curl exits non-zero on HTTP error AND prints
+        # the response body — Keycloak's error responses (invalid_client,
+        # unauthorized_client, etc.) are JSON in the body, useful for
+        # debugging without leaking the secret in URL.
+        RESPONSE=$(curl -fsS --fail-with-body \
+          -X POST "${TOKEN_URL}" \
+          -H "Content-Type: application/x-www-form-urlencoded" \
+          --data-binary "${BODY}")
+
+        ACCESS_TOKEN=$(echo "${RESPONSE}" | jq -r '.access_token // empty')
+        EXPIRES_IN=$(echo "${RESPONSE}" | jq -r '.expires_in // empty')
+
+        if [ -z "${ACCESS_TOKEN}" ]; then
+          echo "::error::Keycloak response did not contain access_token" >&2
+          # Avoid printing the full response (might contain refresh_token).
+          # Just the keys to help diagnose.
+          echo "::error::Response keys: $(echo "${RESPONSE}" | jq -r 'keys | join(", ")')" >&2
+          exit 1
+        fi
+
+        # Mask before exposing as output so any accidental echo by a
+        # downstream step gets redacted.
+        echo "::add-mask::${ACCESS_TOKEN}"
+        echo "access-token=${ACCESS_TOKEN}" >> "${GITHUB_OUTPUT}"
+        echo "expires-in=${EXPIRES_IN}" >> "${GITHUB_OUTPUT}"
