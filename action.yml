@@ -76,15 +76,15 @@ runs:
           BODY="${BODY}&scope=${ENCODED_SCOPE}"
         fi
 
-        # --fail-with-body so curl exits non-zero on HTTP error AND prints
-        # the response body — Keycloak's error responses (invalid_client,
-        # unauthorized_client, etc.) are JSON in the body, useful for
-        # debugging without leaking the secret in URL.
-        #
-        # Note: --fail-with-body is mutually exclusive with -f / --fail
-        # in some curl versions (e.g. ubuntu-latest's 8.x rejects the
-        # combo). Drop -f and rely on --fail-with-body alone.
-        RESPONSE=$(curl -sS --fail-with-body \
+        # -fsS: fail on HTTP error (-f), silent progress (-s), still show
+        # error messages (-S). We deliberately don't use --fail-with-body
+        # — newer curl rejects -f + --fail-with-body as mutually
+        # exclusive, and older curl (e.g. the myoung34 runner image's
+        # build) doesn't recognize --fail-with-body at all. -fsS works
+        # across all versions; we lose the response body on HTTP error,
+        # but the downstream `[ -z "${ACCESS_TOKEN}" ]` check catches
+        # malformed/empty success responses anyway.
+        RESPONSE=$(curl -fsS \
           -X POST "${TOKEN_URL}" \
           -H "Content-Type: application/x-www-form-urlencoded" \
           --data-binary "${BODY}")
