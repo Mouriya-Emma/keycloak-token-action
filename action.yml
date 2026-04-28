@@ -80,7 +80,11 @@ runs:
         # the response body — Keycloak's error responses (invalid_client,
         # unauthorized_client, etc.) are JSON in the body, useful for
         # debugging without leaking the secret in URL.
-        RESPONSE=$(curl -fsS --fail-with-body \
+        #
+        # Note: --fail-with-body is mutually exclusive with -f / --fail
+        # in some curl versions (e.g. ubuntu-latest's 8.x rejects the
+        # combo). Drop -f and rely on --fail-with-body alone.
+        RESPONSE=$(curl -sS --fail-with-body \
           -X POST "${TOKEN_URL}" \
           -H "Content-Type: application/x-www-form-urlencoded" \
           --data-binary "${BODY}")
